@@ -4,8 +4,7 @@ import pandas as pd
 import urllib.parse
 import os
 
-# --- 1. アイコン・ページ設定 (Raw URLへ変換済) ---
-# GitHubのURLを直接読み込める形式に変換しています
+# --- 1. アイコン・ページ設定 ---
 icon_url = "https://github.com/Leciel5th/KOKOROZASHI-Blue/raw/main/icon.png"
 
 st.set_page_config(
@@ -13,6 +12,14 @@ st.set_page_config(
     page_icon=icon_url, 
     layout="wide"
 )
+
+# iPhoneのホーム画面アイコンとして認識させるための強力な設定
+st.markdown(f"""
+    <head>
+        <link rel="apple-touch-icon" href="{icon_url}">
+        <link rel="icon" type="image/png" href="{icon_url}">
+    </head>
+    """, unsafe_allow_html=True)
 
 # RSI計算関数
 def get_rsi(ticker):
@@ -35,9 +42,15 @@ if "df" not in st.session_state:
             rows = [r.split(",") for r in decoded.split("|") if r]
             st.session_state.df = pd.DataFrame(rows, columns=["Ticker", "AvgPrice", "Shares"])
         except:
-            st.session_state.df = pd.DataFrame([["RKLB", 0.0, 0]], columns=["Ticker", "AvgPrice", "Shares"])
-    else:
-        st.session_state.df = pd.DataFrame([["RKLB", 10.0, 100]], columns=["Ticker", "AvgPrice", "Shares"])
+            pass
+    
+    # 銘柄が読み込めない、または新規の場合のデフォルト（ご指定の銘柄）
+    if "df" not in st.session_state or st.session_state.df.empty:
+        default_stocks = [
+            ["RKLB", 0.0, 0], ["JOBY", 0.0, 0], ["QS", 0.0, 0],
+            ["BKSY", 0.0, 0], ["PL", 0.0, 0], ["ASTS", 0.0, 0]
+        ]
+        st.session_state.df = pd.DataFrame(default_stocks, columns=["Ticker", "AvgPrice", "Shares"])
 
 st.title("🛡️ KOKOROZASHI Blue")
 
@@ -45,7 +58,7 @@ tab1, tab2 = st.tabs(["📈 Dashboard", "⚙️ Settings"])
 
 with tab2:
     st.subheader("Edit Portfolio")
-    # data_editor の変更を直接反映
+    # data_editor の変更を反映
     edited_df = st.data_editor(st.session_state.df, num_rows="dynamic", use_container_width=True)
     st.session_state.df = edited_df
 
@@ -60,10 +73,9 @@ with tab2:
                 data_list.append(f"{t},{p},{s}")
         
         data_str = "|".join(data_list)
-        # URLパラメータを更新してリロード
         st.query_params["data"] = data_str
-        st.success("✅ URL Updated! Please check the address bar and Add to Home Screen.")
-        st.rerun()  # これによりURLバーが確実に書き換わります
+        st.success("✅ URL Updated! Please Add to Home Screen now.")
+        st.rerun()
 
 with tab1:
     try:
@@ -77,10 +89,10 @@ with tab1:
         results = []
         total_val, total_pl = 0.0, 0.0
         
-        with st.spinner('Calculating...'):
+        with st.spinner('Calculating market data...'):
             for _, row in display_df.iterrows():
                 ticker = str(row.get("Ticker", "")).upper().strip()
-                if not ticker or ticker == "NONE" or ticker == "NAN": continue
+                if not ticker or ticker in ["NONE", "NAN", ""]: continue
                 
                 try:
                     avg = float(row.get("AvgPrice", 0)) if row.get("AvgPrice") else 0.0
@@ -122,4 +134,4 @@ with tab1:
     else:
         st.info("Please add stocks in the Settings tab.")
 
-st.caption(f"USD/JPY: {rate:.2f} | 志 Blue v2.6")
+st.caption(f"USD/JPY: {rate:.2f} | 志 Blue v2.7")
