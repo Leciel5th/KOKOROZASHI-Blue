@@ -4,63 +4,70 @@ import pandas as pd
 import urllib.parse
 import os
 
-# 1. ページ設定
+# --- 1. アイコン・ページ設定 (記述維持) ---
+# icon.png があれば使い、なければ青いハートにします
 icon_path = "icon.png"
 if os.path.exists(icon_path):
     st.set_page_config(page_title="KOKOROZASHI Blue", page_icon=icon_path, layout="wide")
 else:
-    st.set_page_config(page_title="KOKOROZASHI Blue", page_icon="icon.png", layout="wide")
+    st.set_page_config(page_title="KOKOROZASHI Blue", page_icon="💙", layout="wide")
 
-# スタイル調整
-st.markdown("<style>table {margin-left: auto; margin-right: auto;}</style>", unsafe_allow_html=True)
-
-# 2. 為替取得（キャッシュして高速化）
-@st.cache_data(ttl=3600)
-def get_rate():
-    try:
-        return yf.Ticker("USDJPY=X").history(period="1d")['Close'].iloc[-1]
-    except: return 150.0
-
-# 3. URLからデータを読み込む機能
-def load_data_from_url():
-    params = st.query_params
-    if "d" in params:
+# --- 2. データ復元ロジック (URLから読み込み) ---
+def get_data_from_url():
+    query_params = st.query_params
+    if "data" in query_params:
         try:
-            # 形式: Ticker,Avg,Qty|Ticker,Avg,Qty
-            raw_data = params["d"]
-            rows = [r.split(",") for r in raw_data.split("|")]
+            # URLからデータを解読
+            decoded = urllib.parse.unquote(query_params["data"])
+            rows = [r.split(",") for r in decoded.split("|") if r]
             return pd.DataFrame(rows, columns=["Ticker", "AvgPrice", "Shares"])
-        except: pass
-    return pd.DataFrame(columns=["Ticker", "AvgPrice", "Shares"])
+        except:
+            return pd.DataFrame(columns=["Ticker", "AvgPrice", "Shares"])
+    return pd.DataFrame([["RKLB", 0.0, 0], ["TSLA", 0.0, 0]], columns=["Ticker", "AvgPrice", "Shares"])
 
-# --- メインロジック ---
+# --- 3. メイン画面レイアウト ---
 st.title("🛡️ KOKOROZASHI Blue")
 
 # データの読み込み
-df_portfolio = load_data_from_url()
+if 'df' not in st.session_state:
+    st.session_state.df = get_data_from_url()
 
-tab1, tab2 = st.tabs(["📈 Dashboard", "⚙️ Edit & Save"])
+tab1, tab2 = st.tabs(["📈 Dashboard (表示)", "⚙️ Settings (入力・保存)"])
 
 with tab2:
-    st.subheader("1. 銘柄情報を編集")
-    # 編集可能なテーブル
-    edited_df = st.data_editor(df_portfolio, num_rows="dynamic", use_container_width=True, key="editor")
+    st.subheader("1. 保有銘柄の入力")
+    # 入力テーブル
+    edited_df = st.data_editor(st.session_state.df, num_rows="dynamic", use_container_width=True)
     
-    st.subheader("2. 保存（iPhoneへ登録）")
-    # URLを作成する
-    if not edited_df.empty:
-        data_str = "|".join([f"{row['Ticker']},{row['AvgPrice']},{row['Shares']}" for _, row in edited_df.iterrows()])
-        encoded_data = urllib.parse.quote(data_str)
-        save_url = f"https://your-app-url.streamlit.app/?d={encoded_data}" # ここは自分のURLに自動で置き換わります
+    st.subheader("2. 保存の手順")
+    st.warning("⚠️ 重要：下のボタンを押して生成された『保存用URL』を、ブラウザのブックマークやiPhoneのホーム画面に登録してください。")
+    
+    if st.button("保存用URLを発行する"):
+        # データを文字列に変換してURLを作成
+        data_list = []
+        for _, row in edited_df.iterrows():
+            if row["Ticker"]:
+                data_list.append(f"{row['Ticker']},{row['AvgPrice']},{row['Shares']}")
         
-        st.info("下のボタンを押すとURLが更新されます。その後、Safariのメニューから『ホーム画面に追加』をしてください。")
-        if st.button("URLを作成して保存準備をする"):
-            st.query_params["d"] = data_str
-            st.success("URLを更新しました！この状態でホーム画面に追加してください。")
+        data_str = "|".join(data_list)
+        encoded_data = urllib.parse.quote(data_str)
+        
+        # 現在のURLを取得してデータパラメータを付与
+        save_link = f"/?data={encoded_data}"
+        st.query_params["data"] = data_str # ブラウザのURLを書き換える
+        
+        st.success("✅ URLを更新しました！")
+        st.markdown(f"**[このリンクをブックマークしてください]({save_link})**")
+        st.info("iPhoneの場合：この状態でSafariの『ホーム画面に追加』をすると、この入力内容が保存された状態で起動します。")
 
 with tab1:
-    rate = get_rate()
-    if not edited_df.empty and edited_df["Ticker"].notna().any():
+    # 為替取得
+    try:
+        rate = yf.Ticker("USDJPY=X").history(period="1d")['Close'].iloc[-1]
+    except:
+        rate = 150.0
+
+    if not edited_df.empty:
         results = []
         total_val, total_pl = 0, 0
         
@@ -83,14 +90,14 @@ with tab1:
                 results.append({
                     "Symbol": ticker,
                     "Price": f"${curr:.2f}",
-                    "P/L ($)": f"{pl:+.2f}",
+                    "Profit/Loss": f"{pl:+.2f}",
                     "P/L (%)": f"{(pl/cost*100):+.1f}%" if cost > 0 else "0%",
                     "Value (JPY)": f"¥{int(mkt_val * rate):,}"
                 })
             except:
-                st.warning(f"Error loading {ticker}")
+                continue
 
-        # サマリー表示
+        # サマリー
         c1, c2 = st.columns(2)
         c1.metric("Total Assets", f"¥{int(total_val * rate):,}")
         c2.metric("Total Profit/Loss", f"¥{int(total_pl * rate):,}", delta=f"¥{int(total_pl * rate):,}")
@@ -99,6 +106,6 @@ with tab1:
         if results:
             st.table(pd.DataFrame(results).set_index("Symbol"))
     else:
-        st.info("『Edit & Save』タブで銘柄を入力してください。")
+        st.info("Settingsタブで銘柄を入力してください。")
 
-st.caption(f"USD/JPY: {rate:.2f} | 志 Blue v2.1 (No-DB Version)")
+st.caption(f"USD/JPY: {rate:.2f} | 志 Blue v2.2")
