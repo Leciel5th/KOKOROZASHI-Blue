@@ -2,11 +2,23 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import urllib.parse
-import os
+import requests
 
-# --- 1. アイコン・ページ設定 (iPhone完全対応版) ---
-# GitHubのRaw URL（直接画像データにアクセスするURL）
-icon_url = "https://raw.githubusercontent.com/Leciel5th/KOKOROZASHI-Blue/main/icon.png"
+# --- 1. アイコン・ページ設定 (大文字小文字両対応版) ---
+# GitHubのURL（小文字と大文字の両方の可能性を考慮）
+ICON_URL_LOW = "https://raw.githubusercontent.com/Leciel5th/KOKOROZASHI-Blue/main/icon.png"
+ICON_URL_UP = "https://raw.githubusercontent.com/Leciel5th/KOKOROZASHI-Blue/main/icon.PNG"
+
+# どちらの画像が存在するかチェックしてURLを確定
+def get_valid_icon_url():
+    try:
+        if requests.head(ICON_URL_LOW).status_code == 200:
+            return ICON_URL_LOW
+        return ICON_URL_UP
+    except:
+        return ICON_URL_LOW
+
+icon_url = get_valid_icon_url()
 
 st.set_page_config(
     page_title="KOKOROZASHI Blue", 
@@ -14,25 +26,22 @@ st.set_page_config(
     layout="wide"
 )
 
-# iPhone用：タイトルやヘッダーを小さくし、アイコンを強制認識させる設定
+# iPhone用：アイコン強制認識設定
 st.markdown(f"""
     <head>
         <link rel="apple-touch-icon" href="{icon_url}">
         <link rel="icon" href="{icon_url}">
     </head>
     <style>
-        /* タイトルとヘッダーのサイズをiPhone向けに縮小 */
-        h1 {{ font-size: 1.5rem !important; padding-bottom: 0px; }}
+        h1 {{ font-size: 1.5rem !important; }}
         h3 {{ font-size: 1.1rem !important; }}
-        .stTabs [data-baseweb="tab-list"] {{ gap: 10px; }}
-        .stTabs [data-baseweb="tab"] {{ font-size: 14px; padding: 10px; }}
-        /* テーブルのフォントサイズ調整 */
+        .stTabs [data-baseweb="tab"] {{ font-size: 14px; }}
         .stTable {{ font-size: 12px !important; }}
         div[data-testid="stMetricValue"] {{ font-size: 1.2rem !important; }}
     </style>
     """, unsafe_allow_html=True)
 
-# RSI計算関数
+# RSI計算
 def get_rsi(ticker):
     try:
         d = yf.Ticker(ticker).history(period="1mo")
@@ -44,7 +53,7 @@ def get_rsi(ticker):
         return 100 - (100 / (1 + rs)).iloc[-1]
     except: return 50
 
-# --- 2. データ管理ロジック ---
+# --- 2. データ管理 ---
 query_params = st.query_params
 url_data = {}
 if "data" in query_params:
@@ -56,12 +65,10 @@ if "data" in query_params:
                 url_data[t] = {"AvgPrice": float(a), "Shares": float(s)}
     except: pass
 
-# --- 3. サイドバー設定 ---
+# --- 3. サイドバー ---
 st.sidebar.markdown(f"### 🛡️ KOKOROZASHI")
-# ① IPOスケジュールの復活
 st.sidebar.link_button("📅 Nasdaq IPO Calendar", "https://www.nasdaq.com/market-activity/ipos")
 st.sidebar.markdown("---")
-
 st.sidebar.header("⚙️ Ticker List")
 default_list = "RKLB, JOBY, QS, BKSY, PL, ASTS"
 ticker_input = st.sidebar.text_area("Separate with commas", value=default_list)
@@ -76,11 +83,9 @@ df_init = pd.DataFrame(init_rows)
 
 # --- 4. メイン画面 ---
 st.title("KOKOROZASHI Blue")
-
 tab1, tab2 = st.tabs(["📈 Dash", "📝 Edit"])
 
 with tab2:
-    # ③ シンプルな英語表記に変更
     st.markdown("### Edit Portfolio")
     edited_df = st.data_editor(df_init, use_container_width=True, hide_index=True)
     edited_df = edited_df.fillna(0)
@@ -99,7 +104,6 @@ with tab1:
     if not edited_df.empty:
         results = []
         total_val, total_pl = 0.0, 0.0
-        
         with st.spinner('Loading...'):
             for _, row in edited_df.iterrows():
                 ticker = str(row["Ticker"]).upper().strip()
@@ -108,24 +112,16 @@ with tab1:
                     avg, shares = float(row["AvgPrice"]), float(row["Shares"])
                     stock = yf.Ticker(ticker)
                     curr = stock.history(period="1d")['Close'].iloc[-1]
-                    
-                    mkt_val = curr * shares
-                    cost = avg * shares
+                    mkt_val, cost = curr * shares, avg * shares
                     pl = mkt_val - cost
                     total_val += mkt_val
                     total_pl += pl
-                    
-                    # メイン機能：指値
                     target_95 = curr * 0.95
                     rsi = get_rsi(ticker)
                     signal = "🟢 BUY" if rsi < 35 else "🔴 SELL" if rsi > 65 else "⚪️ HOLD"
-                    
                     results.append({
-                        "Symbol": ticker,
-                        "Price": f"${curr:.2f}",
-                        "Target(95%)": f"${target_95:.2f}",
-                        "Signal": signal,
-                        "P/L ($)": f"{pl:+.2f}",
+                        "Symbol": ticker, "Price": f"${curr:.2f}", "Target(95%)": f"${target_95:.2f}",
+                        "Signal": signal, "P/L ($)": f"{pl:+.2f}", 
                         "P/L (%)": f"{(pl/cost*100):+.1f}%" if cost > 0 else "0%",
                         "JPY Value": f"¥{int(mkt_val * rate):,}"
                     })
@@ -134,8 +130,7 @@ with tab1:
         c1, c2 = st.columns(2)
         c1.metric("Assets", f"¥{int(total_val * rate):,}")
         c2.metric("P/L", f"¥{int(total_pl * rate):,}", delta=f"¥{int(total_pl * rate):,}")
-
         if results:
             st.table(pd.DataFrame(results).set_index("Symbol"))
 
-st.caption(f"USD/JPY: {rate:.2f} | v3.0")
+st.caption(f"USD/JPY: {rate:.2f} | v3.1")
