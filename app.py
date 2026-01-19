@@ -8,7 +8,7 @@ icon_path = "icon.png"
 if os.path.exists(icon_path):
     st.set_page_config(page_title="KOKOROZASHI Blue", page_icon=icon_path, layout="wide")
 else:
-    st.set_page_config(page_title="KOKOROZASHI Blue", page_icon="🐟", layout="wide")
+    st.set_page_config(page_title="KOKOROZASHI Blue", page_icon="icon.png", layout="wide")
 
 # 為替取得
 def get_exchange_rate():
