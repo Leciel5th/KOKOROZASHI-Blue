@@ -13,13 +13,8 @@ st.set_page_config(
     layout="wide"
 )
 
-# iPhoneのホーム画面アイコンとして認識させるための強力な設定
-st.markdown(f"""
-    <head>
-        <link rel="apple-touch-icon" href="{icon_url}">
-        <link rel="icon" type="image/png" href="{icon_url}">
-    </head>
-    """, unsafe_allow_html=True)
+# iPhone用アイコン設定
+st.markdown(f'<head><link rel="apple-touch-icon" href="{icon_url}"></head>', unsafe_allow_html=True)
 
 # RSI計算関数
 def get_rsi(ticker):
@@ -33,90 +28,92 @@ def get_rsi(ticker):
         return 100 - (100 / (1 + rs)).iloc[-1]
     except: return 50
 
-# --- 2. データ復元・セッション管理 ---
-if "df" not in st.session_state:
-    query_params = st.query_params
-    if "data" in query_params:
-        try:
-            decoded = urllib.parse.unquote(query_params["data"])
-            rows = [r.split(",") for r in decoded.split("|") if r]
-            st.session_state.df = pd.DataFrame(rows, columns=["Ticker", "AvgPrice", "Shares"])
-        except:
-            pass
-    
-    # 銘柄が読み込めない、または新規の場合のデフォルト（ご指定の銘柄）
-    if "df" not in st.session_state or st.session_state.df.empty:
-        default_stocks = [
-            ["RKLB", 0.0, 0], ["JOBY", 0.0, 0], ["QS", 0.0, 0],
-            ["BKSY", 0.0, 0], ["PL", 0.0, 0], ["ASTS", 0.0, 0]
-        ]
-        st.session_state.df = pd.DataFrame(default_stocks, columns=["Ticker", "AvgPrice", "Shares"])
+# --- 2. データ復元・管理 ---
+# URLから読み込み
+query_params = st.query_params
+url_data = {}
+if "data" in query_params:
+    try:
+        decoded = urllib.parse.unquote(query_params["data"])
+        for item in decoded.split("|"):
+            if "," in item:
+                t, a, s = item.split(",")
+                url_data[t] = {"AvgPrice": float(a), "Shares": float(s)}
+    except: pass
 
 st.title("🛡️ KOKOROZASHI Blue")
 
-tab1, tab2 = st.tabs(["📈 Dashboard", "⚙️ Settings"])
+# --- 3. サイドバー：一括銘柄登録 ---
+st.sidebar.header("⚙️ Setup")
+default_list = "RKLB, JOBY, QS, BKSY, PL, ASTS"
+ticker_input = st.sidebar.text_area("銘柄一括登録 (カンマ区切り)", value=default_list)
+current_tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
+
+# データフレームの作成（URLデータがあれば優先、なければ0）
+init_rows = []
+for t in current_tickers:
+    avg = url_data.get(t, {}).get("AvgPrice", 0.0)
+    sh = url_data.get(t, {}).get("Shares", 0.0)
+    init_rows.append({"Ticker": t, "AvgPrice": avg, "Shares": sh})
+
+df_init = pd.DataFrame(init_rows)
+
+tab1, tab2 = st.tabs(["📈 Dashboard", "📝 Portfolio Edit"])
 
 with tab2:
-    st.subheader("Edit Portfolio")
-    # data_editor の変更を反映
-    edited_df = st.data_editor(st.session_state.df, num_rows="dynamic", use_container_width=True)
-    st.session_state.df = edited_df
+    st.subheader("保有状況の編集")
+    # data_editorで数値を編集（Noneを0で埋める設定）
+    edited_df = st.data_editor(df_init, use_container_width=True, hide_index=True)
+    
+    # 計算用にNoneを0に置換
+    edited_df = edited_df.fillna(0)
 
-    if st.button("Save & Update URL"):
-        valid_df = edited_df.dropna(subset=["Ticker"])
+    if st.button("Save & Update URL (保存)"):
         data_list = []
-        for _, row in valid_df.iterrows():
+        for _, row in edited_df.iterrows():
             t = str(row["Ticker"]).strip().upper()
-            if t and t != "NONE" and t != "NAN":
-                p = row["AvgPrice"] if pd.notnull(row["AvgPrice"]) else 0
-                s = row["Shares"] if pd.notnull(row["Shares"]) else 0
-                data_list.append(f"{t},{p},{s}")
+            if t:
+                data_list.append(f"{t},{row['AvgPrice']},{row['Shares']}")
         
         data_str = "|".join(data_list)
         st.query_params["data"] = data_str
-        st.success("✅ URL Updated! Please Add to Home Screen now.")
+        st.success("✅ 保存しました！URLが更新されました。")
         st.rerun()
 
 with tab1:
     try:
-        rate_ticker = yf.Ticker("USDJPY=X").history(period="1d")
-        rate = rate_ticker['Close'].iloc[-1] if not rate_ticker.empty else 150.0
+        rate = yf.Ticker("USDJPY=X").history(period="1d")['Close'].iloc[-1]
     except: rate = 150.0
 
-    display_df = st.session_state.df
-
-    if not display_df.empty:
+    if not edited_df.empty:
         results = []
         total_val, total_pl = 0.0, 0.0
         
-        with st.spinner('Calculating market data...'):
-            for _, row in display_df.iterrows():
-                ticker = str(row.get("Ticker", "")).upper().strip()
-                if not ticker or ticker in ["NONE", "NAN", ""]: continue
+        with st.spinner('Loading Market Data...'):
+            for _, row in edited_df.iterrows():
+                ticker = str(row["Ticker"]).upper().strip()
+                if not ticker: continue
                 
                 try:
-                    avg = float(row.get("AvgPrice", 0)) if row.get("AvgPrice") else 0.0
-                    shares = float(row.get("Shares", 0)) if row.get("Shares") else 0.0
+                    # None対策: 明示的にfloat変換
+                    avg = float(row["AvgPrice"]) if pd.notnull(row["AvgPrice"]) else 0.0
+                    shares = float(row["Shares"]) if pd.notnull(row["Shares"]) else 0.0
                     
                     stock = yf.Ticker(ticker)
-                    hist = stock.history(period="1d")
-                    if hist.empty: continue
+                    curr = stock.history(period="1d")['Close'].iloc[-1]
                     
-                    curr = hist['Close'].iloc[-1]
                     mkt_val = curr * shares
                     cost = avg * shares
                     pl = mkt_val - cost
                     total_val += mkt_val
                     total_pl += pl
                     
-                    target_95 = curr * 0.95
                     rsi = get_rsi(ticker)
                     signal = "🟢 BUY" if rsi < 35 else "🔴 SELL" if rsi > 65 else "⚪️ HOLD"
                     
                     results.append({
                         "Symbol": ticker,
                         "Price": f"${curr:.2f}",
-                        "Target(95%)": f"${target_95:.2f}",
                         "Signal": signal,
                         "P/L ($)": f"{pl:+.2f}",
                         "P/L (%)": f"{(pl/cost*100):+.1f}%" if cost > 0 else "0%",
@@ -128,10 +125,8 @@ with tab1:
         c1, c2 = st.columns(2)
         c1.metric("Total Assets", f"¥{int(total_val * rate):,}")
         c2.metric("Total Profit/Loss", f"¥{int(total_pl * rate):,}", delta=f"¥{int(total_pl * rate):,}")
-
-        if results:
-            st.table(pd.DataFrame(results).set_index("Symbol"))
+        st.table(pd.DataFrame(results).set_index("Symbol"))
     else:
-        st.info("Please add stocks in the Settings tab.")
+        st.info("サイドバーで銘柄を入力してください。")
 
-st.caption(f"USD/JPY: {rate:.2f} | 志 Blue v2.7")
+st.caption(f"USD/JPY: {rate:.2f} | 志 Blue v2.8")
