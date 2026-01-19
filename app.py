@@ -13,7 +13,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# iPhone用アイコン設定
+# iPhone用アイコン設定（ホーム画面追加時用）
 st.markdown(f'<head><link rel="apple-touch-icon" href="{icon_url}"></head>', unsafe_allow_html=True)
 
 # RSI計算関数
@@ -28,8 +28,7 @@ def get_rsi(ticker):
         return 100 - (100 / (1 + rs)).iloc[-1]
     except: return 50
 
-# --- 2. データ復元・管理 ---
-# URLから読み込み
+# --- 2. データ復元・管理ロジック ---
 query_params = st.query_params
 url_data = {}
 if "data" in query_params:
@@ -43,13 +42,14 @@ if "data" in query_params:
 
 st.title("🛡️ KOKOROZASHI Blue")
 
-# --- 3. サイドバー：一括銘柄登録 ---
-st.sidebar.header("⚙️ Setup")
+# --- 3. サイドバー：銘柄の一括登録 ---
+st.sidebar.header("⚙️ 銘柄一括登録")
+# ご指定の初期銘柄をデフォルトに設定
 default_list = "RKLB, JOBY, QS, BKSY, PL, ASTS"
-ticker_input = st.sidebar.text_area("銘柄一括登録 (カンマ区切り)", value=default_list)
+ticker_input = st.sidebar.text_area("Tickerリスト (カンマ区切り)", value=default_list)
 current_tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
 
-# データフレームの作成（URLデータがあれば優先、なければ0）
+# 表の初期データ作成
 init_rows = []
 for t in current_tickers:
     avg = url_data.get(t, {}).get("AvgPrice", 0.0)
@@ -58,14 +58,12 @@ for t in current_tickers:
 
 df_init = pd.DataFrame(init_rows)
 
-tab1, tab2 = st.tabs(["📈 Dashboard", "📝 Portfolio Edit"])
+tab1, tab2 = st.tabs(["📈 Dashboard (指値確認)", "📝 Portfolio Edit (入力・保存)"])
 
 with tab2:
     st.subheader("保有状況の編集")
-    # data_editorで数値を編集（Noneを0で埋める設定）
+    # ここで単価と株数を入力。Noneは自動的に0扱い
     edited_df = st.data_editor(df_init, use_container_width=True, hide_index=True)
-    
-    # 計算用にNoneを0に置換
     edited_df = edited_df.fillna(0)
 
     if st.button("Save & Update URL (保存)"):
@@ -77,43 +75,48 @@ with tab2:
         
         data_str = "|".join(data_list)
         st.query_params["data"] = data_str
-        st.success("✅ 保存しました！URLが更新されました。")
+        st.success("✅ データを保存しました！このURLでホーム画面に登録してください。")
         st.rerun()
 
 with tab1:
     try:
-        rate = yf.Ticker("USDJPY=X").history(period="1d")['Close'].iloc[-1]
+        # 最新の為替レート取得
+        rate_ticker = yf.Ticker("USDJPY=X").history(period="1d")
+        rate = rate_ticker['Close'].iloc[-1] if not rate_ticker.empty else 150.0
     except: rate = 150.0
 
     if not edited_df.empty:
         results = []
         total_val, total_pl = 0.0, 0.0
         
-        with st.spinner('Loading Market Data...'):
+        with st.spinner('計算中...'):
             for _, row in edited_df.iterrows():
                 ticker = str(row["Ticker"]).upper().strip()
                 if not ticker: continue
                 
                 try:
-                    # None対策: 明示的にfloat変換
-                    avg = float(row["AvgPrice"]) if pd.notnull(row["AvgPrice"]) else 0.0
-                    shares = float(row["Shares"]) if pd.notnull(row["Shares"]) else 0.0
+                    avg = float(row["AvgPrice"])
+                    shares = float(row["Shares"])
                     
                     stock = yf.Ticker(ticker)
                     curr = stock.history(period="1d")['Close'].iloc[-1]
                     
+                    # 各種計算
                     mkt_val = curr * shares
                     cost = avg * shares
                     pl = mkt_val - cost
                     total_val += mkt_val
                     total_pl += pl
                     
+                    # 【メイン機能】指値とシグナル
+                    target_95 = curr * 0.95
                     rsi = get_rsi(ticker)
                     signal = "🟢 BUY" if rsi < 35 else "🔴 SELL" if rsi > 65 else "⚪️ HOLD"
                     
                     results.append({
                         "Symbol": ticker,
                         "Price": f"${curr:.2f}",
+                        "Target (95%)": f"${target_95:.2f}", # 指値復活
                         "Signal": signal,
                         "P/L ($)": f"{pl:+.2f}",
                         "P/L (%)": f"{(pl/cost*100):+.1f}%" if cost > 0 else "0%",
@@ -121,12 +124,15 @@ with tab1:
                     })
                 except: continue
 
-        # サマリー
+        # サマリー表示
         c1, c2 = st.columns(2)
         c1.metric("Total Assets", f"¥{int(total_val * rate):,}")
         c2.metric("Total Profit/Loss", f"¥{int(total_pl * rate):,}", delta=f"¥{int(total_pl * rate):,}")
-        st.table(pd.DataFrame(results).set_index("Symbol"))
-    else:
-        st.info("サイドバーで銘柄を入力してください。")
 
-st.caption(f"USD/JPY: {rate:.2f} | 志 Blue v2.8")
+        # メインテーブルの表示
+        if results:
+            st.table(pd.DataFrame(results).set_index("Symbol"))
+    else:
+        st.info("サイドバーで銘柄リストを入力してください。")
+
+st.caption(f"USD/JPY: {rate:.2f} | 志 Blue v2.9 (Target Restored)")
