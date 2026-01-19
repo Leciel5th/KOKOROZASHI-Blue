@@ -4,18 +4,21 @@ import pandas as pd
 import urllib.parse
 import os
 
-# --- 1. アイコン・ページ設定 ---
-icon_path = "icon.png"
-if os.path.exists(icon_path):
-    st.set_page_config(page_title="KOKOROZASHI Blue", page_icon=icon_path, layout="wide")
-else:
-    st.set_page_config(page_title="KOKOROZASHI Blue", page_icon="💙", layout="wide")
+# --- 1. アイコン・ページ設定 (Raw URLへ変換済) ---
+# GitHubのURLを直接読み込める形式に変換しています
+icon_url = "https://github.com/Leciel5th/KOKOROZASHI-Blue/raw/main/icon.png"
+
+st.set_page_config(
+    page_title="KOKOROZASHI Blue", 
+    page_icon=icon_url, 
+    layout="wide"
+)
 
 # RSI計算関数
 def get_rsi(ticker):
     try:
         d = yf.Ticker(ticker).history(period="1mo")
-        if d.empty: return 50
+        if len(d) < 15: return 50
         delta = d['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -25,7 +28,6 @@ def get_rsi(ticker):
 
 # --- 2. データ復元・セッション管理 ---
 if "df" not in st.session_state:
-    # URLからデータを取得する
     query_params = st.query_params
     if "data" in query_params:
         try:
@@ -35,57 +37,60 @@ if "df" not in st.session_state:
         except:
             st.session_state.df = pd.DataFrame([["RKLB", 0.0, 0]], columns=["Ticker", "AvgPrice", "Shares"])
     else:
-        st.session_state.df = pd.DataFrame([["RKLB", 0.0, 0]], columns=["Ticker", "AvgPrice", "Shares"])
+        st.session_state.df = pd.DataFrame([["RKLB", 10.0, 100]], columns=["Ticker", "AvgPrice", "Shares"])
 
 st.title("🛡️ KOKOROZASHI Blue")
 
 tab1, tab2 = st.tabs(["📈 Dashboard", "⚙️ Settings"])
 
 with tab2:
-    st.subheader("銘柄・保有情報の編集")
-    # ここでの変更を直接 session_state.df に反映させる
-    edited_df = st.data_editor(st.session_state.df, num_rows="dynamic", use_container_width=True, key="my_editor")
-    
-    # 変更があったらセッション状態を更新
+    st.subheader("Edit Portfolio")
+    # data_editor の変更を直接反映
+    edited_df = st.data_editor(st.session_state.df, num_rows="dynamic", use_container_width=True)
     st.session_state.df = edited_df
 
-    if st.button("保存用URLを発行する"):
-        # 空の行を除外して保存
+    if st.button("Save & Update URL"):
         valid_df = edited_df.dropna(subset=["Ticker"])
-        data_list = [f"{row['Ticker']},{row['AvgPrice']},{row['Shares']}" for _, row in valid_df.iterrows() if row["Ticker"]]
+        data_list = []
+        for _, row in valid_df.iterrows():
+            t = str(row["Ticker"]).strip().upper()
+            if t and t != "NONE" and t != "NAN":
+                p = row["AvgPrice"] if pd.notnull(row["AvgPrice"]) else 0
+                s = row["Shares"] if pd.notnull(row["Shares"]) else 0
+                data_list.append(f"{t},{p},{s}")
+        
         data_str = "|".join(data_list)
+        # URLパラメータを更新してリロード
         st.query_params["data"] = data_str
-        st.success("✅ URLを更新しました！画面上のURLバーが変化したのを確認してから、ホーム画面に追加してください。")
+        st.success("✅ URL Updated! Please check the address bar and Add to Home Screen.")
+        st.rerun()  # これによりURLバーが確実に書き換わります
 
 with tab1:
     try:
-        # 為替取得（最新）
-        rate_data = yf.Ticker("USDJPY=X").history(period="1d")
-        rate = rate_data['Close'].iloc[-1] if not rate_data.empty else 150.0
+        rate_ticker = yf.Ticker("USDJPY=X").history(period="1d")
+        rate = rate_ticker['Close'].iloc[-1] if not rate_ticker.empty else 150.0
     except: rate = 150.0
 
-    # セッション内のデータを使って計算
     display_df = st.session_state.df
 
-    if not display_df.empty and display_df["Ticker"].iloc[0] is not None:
+    if not display_df.empty:
         results = []
         total_val, total_pl = 0.0, 0.0
         
-        # 進行状況を表示
-        with st.spinner('Fetching market data...'):
+        with st.spinner('Calculating...'):
             for _, row in display_df.iterrows():
-                ticker = str(row["Ticker"]).upper().strip()
-                if not ticker or ticker == "" or ticker == "NONE": continue
+                ticker = str(row.get("Ticker", "")).upper().strip()
+                if not ticker or ticker == "NONE" or ticker == "NAN": continue
                 
                 try:
+                    avg = float(row.get("AvgPrice", 0)) if row.get("AvgPrice") else 0.0
+                    shares = float(row.get("Shares", 0)) if row.get("Shares") else 0.0
+                    
                     stock = yf.Ticker(ticker)
                     hist = stock.history(period="1d")
                     if hist.empty: continue
                     
                     curr = hist['Close'].iloc[-1]
-                    avg = float(row["AvgPrice"]) if row["AvgPrice"] else 0.0
-                    shares = float(row["Shares"]) if row["Shares"] else 0.0
-                    
                     mkt_val = curr * shares
                     cost = avg * shares
                     pl = mkt_val - cost
@@ -114,9 +119,7 @@ with tab1:
 
         if results:
             st.table(pd.DataFrame(results).set_index("Symbol"))
-        else:
-            st.info("有効な銘柄データが見つかりません。SettingsタブでTicker（RKLBなど）を正しく入力してください。")
     else:
-        st.info("Settingsタブで銘柄を入力してください。")
+        st.info("Please add stocks in the Settings tab.")
 
-st.caption(f"USD/JPY: {rate:.2f} | 志 Blue v2.4")
+st.caption(f"USD/JPY: {rate:.2f} | 志 Blue v2.6")
