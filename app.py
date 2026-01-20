@@ -1,10 +1,10 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import urllib.parse
 from datetime import datetime
+import yfinance as yf # 為替用
 
-# --- 1. ページ設定 (さらにスリム化) ---
+# --- 1. ページ設定 ---
 ICON_URL = "https://raw.githubusercontent.com/Leciel5th/KOKOROZASHI-Blue/main/icon.png"
 st.set_page_config(page_title="KOKOROZASHI Blue", page_icon=ICON_URL, layout="wide")
 
@@ -12,7 +12,7 @@ st.markdown(f"""
     <style>
         h1 {{ font-size: 1.2rem !important; margin: 0; }}
         .stTable {{ font-size: 11px !important; }}
-        div[data-testid="stMetricValue"] {{ font-size: 1.1rem !important; }}
+        div[data-testid="stMetricValue"] {{ font-size: 1.0rem !important; }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -57,48 +57,43 @@ with tab2:
         st.rerun()
 
 with tab1:
-    with st.spinner('Fetching Prices...'):
-        # 1. 為替取得（超シンプルに）
+    with st.spinner('Fetching Data...'):
+        # 1. 為替取得（これはv4.0で動いていたので維持）
         try:
             rate = yf.Ticker("USDJPY=X").fast_info['lastPrice']
         except: rate = 150.0
 
-        # 2. プレマーケット価格の一括取得（もっとも制限を受けにくい形式）
+        # 2. 株価の一括取得 (yfinanceがダメな時用の軽量版)
         if current_tickers:
             try:
-                # 1日分の1分足（プレ込）だけを全銘柄一括でダウンロード
-                data = yf.download(current_tickers, period="1d", interval="1m", include_extghours=True, progress=False)
-                
+                # 複数の取得方法を組み合わせて「意地でも」取る
                 for t in current_tickers:
                     try:
-                        # 銘柄ごとの最新終値を抽出
-                        if len(current_tickers) > 1:
-                            price_col = data['Close'][t].dropna()
-                        else:
-                            price_col = data['Close'].dropna()
+                        ticker = yf.Ticker(t)
+                        # fast_infoはブロックされても動く場合が多い
+                        curr = ticker.fast_info['lastPrice']
                         
-                        if price_col.empty: continue
-                        curr = float(price_col.iloc[-1])
+                        # もし値が取れない、または明らかに古い場合は最新の「1分」だけを取得
+                        if curr is None or curr == 0:
+                            temp_h = ticker.history(period="1d", interval="1m", include_extghours=True)
+                            curr = temp_h['Close'].iloc[-1] if not temp_h.empty else 0
 
-                        # 保有情報の照合
-                        row = edited_df[edited_df["Ticker"] == t].iloc[0]
-                        avg, sh = float(row["AvgPrice"]), float(row["Shares"])
-                        
-                        m_val = curr * sh
-                        pl = m_val - (avg * sh)
-                        total_val += m_val
-                        total_pl += pl
-                        
-                        results.append({
-                            "Symbol": t, 
-                            "Price": f"${curr:.2f}", 
-                            "Target(95%)": f"${curr*0.95:.2f}",
-                            "P/L($)": f"{pl:+.2f}", 
-                            "JPY": f"¥{int(m_val * rate):,}"
-                        })
+                        if curr > 0:
+                            row = edited_df[edited_df["Ticker"] == t].iloc[0]
+                            avg, sh = float(row["AvgPrice"]), float(row["Shares"])
+                            m_val = curr * sh
+                            pl = m_val - (avg * sh)
+                            total_val += m_val
+                            total_pl += pl
+                            
+                            results.append({
+                                "Symbol": t, "Price": f"${curr:.2f}", 
+                                "Target(95%)": f"${curr*0.95:.2f}",
+                                "P/L($)": f"{pl:+.2f}", "JPY": f"¥{int(m_val * rate):,}"
+                            })
                     except: continue
             except:
-                st.error("Connection failed. Yahoo is busy.")
+                st.error("Still blocked. Please wait 5 mins.")
 
     # 表示
     c1, c2 = st.columns(2)
@@ -108,6 +103,6 @@ with tab1:
     if results:
         st.table(pd.DataFrame(results).set_index("Symbol"))
     else:
-        st.warning("🔄 No Pre-market data yet. Markets may be quiet.")
+        st.warning("🔄 Waiting for data... Markets might be extremely busy.")
 
-st.caption(f"USD/JPY: {rate:.2f} | {datetime.now().strftime('%H:%M:%S')} | v4.0")
+st.caption(f"USD/JPY: {rate:.2f} | {datetime.now().strftime('%H:%M:%S')} | v4.1")
