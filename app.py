@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import urllib.parse
 import requests
+from datetime import datetime
 
 # --- 1. アイコン・ページ設定 ---
 ICON_URL_LOW = "https://raw.githubusercontent.com/Leciel5th/KOKOROZASHI-Blue/main/icon.png"
@@ -17,14 +18,13 @@ def get_valid_icon_url():
 icon_url = get_valid_icon_url()
 st.set_page_config(page_title="KOKOROZASHI Blue", page_icon=icon_url, layout="wide")
 
-# CSSによるiPhone最適化
 st.markdown(f"""
     <head><link rel="apple-touch-icon" href="{icon_url}"></head>
     <style>
-        h1 {{ font-size: 1.4rem !important; margin-bottom: 0; }}
-        .stTabs [data-baseweb="tab"] {{ font-size: 13px; padding: 5px; }}
+        h1 {{ font-size: 1.3rem !important; margin-bottom: 0; }}
+        .stTabs [data-baseweb="tab"] {{ font-size: 12px; padding: 5px; }}
         .stTable {{ font-size: 11px !important; }}
-        div[data-testid="stMetricValue"] {{ font-size: 1.1rem !important; }}
+        div[data-testid="stMetricValue"] {{ font-size: 1.0rem !important; }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -39,7 +39,7 @@ def get_rsi(ticker):
         return 100 - (100 / (1 + rs)).iloc[-1]
     except: return 50
 
-# --- 2. データ管理ロジック ---
+# --- 2. データ管理 ---
 query_params = st.query_params
 url_data = {}
 if "data" in query_params:
@@ -49,8 +49,7 @@ if "data" in query_params:
             if "," in item:
                 parts = item.split(",")
                 if len(parts) == 3:
-                    t, a, s = parts
-                    url_data[t.upper()] = {"AvgPrice": float(a), "Shares": float(s)}
+                    url_data[parts[0].upper()] = {"AvgPrice": float(parts[1]), "Shares": float(parts[2])}
     except: pass
 
 # --- 3. サイドバー ---
@@ -81,46 +80,56 @@ with tab2:
         st.rerun()
 
 with tab1:
+    # 為替取得 (最速手法)
     try:
-        # 為替取得（失敗しても150.0を維持）
-        rate_data = yf.download("USDJPY=X", period="1d", progress=False)
-        rate = rate_data['Close'].iloc[-1] if not rate_data.empty else 150.0
+        rate = yf.Ticker("USDJPY=X").basic_info['lastPrice']
     except: rate = 150.0
 
     if not edited_df.empty:
         results = []
         total_val, total_pl = 0.0, 0.0
         
-        with st.spinner('Updating prices...'):
+        with st.spinner('Loading Market Data...'):
             for _, row in edited_df.iterrows():
                 t = str(row["Ticker"]).upper().strip()
                 if not t: continue
                 try:
-                    # 5日間分取得して「最新の1件」を確実に拾う
-                    # include_extghours=True でプレマーケットもカバー
-                    stock_data = yf.download(t, period="5d", interval="1m", include_extghours=True, progress=False)
-                    if stock_data.empty:
-                        # 1分足がダメなら日足でリトライ
-                        stock_data = yf.download(t, period="5d", progress=False)
+                    stock = yf.Ticker(t)
+                    curr = 0.0
                     
-                    if not stock_data.empty:
-                        curr = float(stock_data['Close'].iloc[-1])
-                        avg, shares = float(row["AvgPrice"]), float(row["Shares"])
-                        mkt_val, cost = curr * shares, avg * shares
-                        pl = mkt_val - cost
-                        total_val += mkt_val
-                        total_pl += pl
-                        
-                        target_95 = curr * 0.95
-                        rsi = get_rsi(t)
-                        signal = "🟢 BUY" if rsi < 35 else "🔴 SELL" if rsi > 65 else "⚪️ HOLD"
-                        
-                        results.append({
-                            "Symbol": t, "Price": f"${curr:.2f}", "Target(95%)": f"${target_95:.2f}",
-                            "Signal": signal, "P/L ($)": f"{pl:+.2f}", 
-                            "P/L (%)": f"{(pl/cost*100):+.1f}%" if cost > 0 else "0%",
-                            "JPY": f"¥{int(mkt_val * rate):,}"
-                        })
+                    # --- 3段階の価格取得ロジック ---
+                    # 1. プレマーケット(1分足)を試す
+                    h = stock.history(period="1d", interval="1m", include_extghours=True)
+                    if not h.empty:
+                        curr = h['Close'].iloc[-1]
+                    else:
+                        # 2. 通常の当日価格を試す
+                        h = stock.history(period="1d")
+                        if not h.empty:
+                            curr = h['Close'].iloc[-1]
+                        else:
+                            # 3. 最終手段：fast_info（最新の約定値）
+                            curr = stock.basic_info['lastPrice']
+                    
+                    if curr == 0 or pd.isna(curr): continue
+
+                    avg, shares = float(row["AvgPrice"]), float(row["Shares"])
+                    mkt_val = curr * shares
+                    cost = avg * shares
+                    pl = mkt_val - cost
+                    total_val += mkt_val
+                    total_pl += pl
+                    
+                    target_95 = curr * 0.95
+                    rsi = get_rsi(t)
+                    signal = "🟢 BUY" if rsi < 35 else "🔴 SELL" if rsi > 65 else "⚪️ HOLD"
+                    
+                    results.append({
+                        "Symbol": t, "Price": f"${curr:.2f}", "Target(95%)": f"${target_95:.2f}",
+                        "Signal": signal, "P/L ($)": f"{pl:+.2f}", 
+                        "P/L (%)": f"{(pl/cost*100):+.1f}%" if cost > 0 else "0%",
+                        "JPY": f"¥{int(mkt_val * rate):,}"
+                    })
                 except: continue
 
         c1, c2 = st.columns(2)
@@ -130,8 +139,8 @@ with tab1:
         if results:
             st.table(pd.DataFrame(results).set_index("Symbol"))
         else:
-            st.warning("⚠️ Market data temporarily unavailable. Please refresh or check tickers.")
+            st.error("No data could be retrieved. Please check Ticker symbols or try again later.")
     else:
-        st.info("Set Tickers in sidebar.")
+        st.info("Input tickers in the sidebar.")
 
-st.caption(f"USD/JPY: {rate:.2f} | v3.4")
+st.caption(f"USD/JPY: {rate:.2f} | Last Update: {datetime.now().strftime('%H:%M:%S')} | v3.5")
