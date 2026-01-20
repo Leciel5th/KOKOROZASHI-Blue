@@ -6,40 +6,22 @@ import requests
 from datetime import datetime
 
 # --- 1. アイコン・ページ設定 ---
-ICON_URL_LOW = "https://raw.githubusercontent.com/Leciel5th/KOKOROZASHI-Blue/main/icon.png"
-ICON_URL_UP = "https://raw.githubusercontent.com/Leciel5th/KOKOROZASHI-Blue/main/icon.PNG"
+ICON_URL = "https://raw.githubusercontent.com/Leciel5th/KOKOROZASHI-Blue/main/icon.png"
 
-def get_valid_icon_url():
-    try:
-        r = requests.head(ICON_URL_LOW, timeout=2)
-        return ICON_URL_LOW if r.status_code == 200 else ICON_URL_UP
-    except: return ICON_URL_LOW
-
-icon_url = get_valid_icon_url()
-st.set_page_config(page_title="KOKOROZASHI Blue", page_icon=icon_url, layout="wide")
+st.set_page_config(page_title="KOKOROZASHI Blue", page_icon=ICON_URL, layout="wide")
 
 st.markdown(f"""
-    <head><link rel="apple-touch-icon" href="{icon_url}"></head>
+    <head><link rel="apple-touch-icon" href="{ICON_URL}"></head>
     <style>
-        h1 {{ font-size: 1.3rem !important; margin-bottom: 0; }}
+        h1 {{ font-size: 1.2rem !important; margin: 0; }}
         .stTabs [data-baseweb="tab"] {{ font-size: 12px; padding: 5px; }}
-        .stTable {{ font-size: 11px !important; }}
+        .stTable {{ font-size: 10px !important; }}
         div[data-testid="stMetricValue"] {{ font-size: 1.0rem !important; }}
+        .stTable td, .stTable th {{ padding: 3px !important; }}
     </style>
     """, unsafe_allow_html=True)
 
-def get_rsi(ticker):
-    try:
-        d = yf.Ticker(ticker).history(period="1mo")
-        if len(d) < 15: return 50
-        delta = d['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        return 100 - (100 / (1 + rs)).iloc[-1]
-    except: return 50
-
-# --- 2. データ管理 ---
+# --- 2. データ復元 ---
 query_params = st.query_params
 url_data = {}
 if "data" in query_params:
@@ -47,15 +29,13 @@ if "data" in query_params:
         decoded = urllib.parse.unquote(query_params["data"])
         for item in decoded.split("|"):
             if "," in item:
-                parts = item.split(",")
-                if len(parts) == 3:
-                    url_data[parts[0].upper()] = {"AvgPrice": float(parts[1]), "Shares": float(parts[2])}
+                p = item.split(",")
+                url_data[p[0].upper()] = {"AvgPrice": float(p[1]), "Shares": float(p[2])}
     except: pass
 
 # --- 3. サイドバー ---
 st.sidebar.markdown("### 🛡️ KOKOROZASHI")
 st.sidebar.link_button("📅 IPO Schedule", "https://www.nasdaq.com/market-activity/ipos")
-st.sidebar.markdown("---")
 ticker_list_str = st.sidebar.text_area("Ticker List", value="RKLB, JOBY, QS, BKSY, PL, ASTS")
 current_tickers = [t.strip().upper() for t in ticker_list_str.split(",") if t.strip()]
 
@@ -80,67 +60,82 @@ with tab2:
         st.rerun()
 
 with tab1:
-    # 為替取得 (最速手法)
-    try:
-        rate = yf.Ticker("USDJPY=X").basic_info['lastPrice']
-    except: rate = 150.0
-
-    if not edited_df.empty:
-        results = []
-        total_val, total_pl = 0.0, 0.0
-        
-        with st.spinner('Loading Market Data...'):
-            for _, row in edited_df.iterrows():
-                t = str(row["Ticker"]).upper().strip()
-                if not t: continue
-                try:
-                    stock = yf.Ticker(t)
-                    curr = 0.0
-                    
-                    # --- 3段階の価格取得ロジック ---
-                    # 1. プレマーケット(1分足)を試す
-                    h = stock.history(period="1d", interval="1m", include_extghours=True)
-                    if not h.empty:
-                        curr = h['Close'].iloc[-1]
-                    else:
-                        # 2. 通常の当日価格を試す
-                        h = stock.history(period="1d")
-                        if not h.empty:
-                            curr = h['Close'].iloc[-1]
-                        else:
-                            # 3. 最終手段：fast_info（最新の約定値）
-                            curr = stock.basic_info['lastPrice']
-                    
-                    if curr == 0 or pd.isna(curr): continue
-
-                    avg, shares = float(row["AvgPrice"]), float(row["Shares"])
-                    mkt_val = curr * shares
-                    cost = avg * shares
-                    pl = mkt_val - cost
-                    total_val += mkt_val
-                    total_pl += pl
-                    
-                    target_95 = curr * 0.95
-                    rsi = get_rsi(t)
-                    signal = "🟢 BUY" if rsi < 35 else "🔴 SELL" if rsi > 65 else "⚪️ HOLD"
-                    
-                    results.append({
-                        "Symbol": t, "Price": f"${curr:.2f}", "Target(95%)": f"${target_95:.2f}",
-                        "Signal": signal, "P/L ($)": f"{pl:+.2f}", 
-                        "P/L (%)": f"{(pl/cost*100):+.1f}%" if cost > 0 else "0%",
-                        "JPY": f"¥{int(mkt_val * rate):,}"
-                    })
-                except: continue
-
-        c1, c2 = st.columns(2)
-        c1.metric("Assets", f"¥{int(total_val * rate):,}")
-        c2.metric("P/L", f"¥{int(total_pl * rate):,}", delta=f"¥{int(total_pl * rate):,}")
-
-        if results:
-            st.table(pd.DataFrame(results).set_index("Symbol"))
-        else:
-            st.error("No data could be retrieved. Please check Ticker symbols or try again later.")
+    if not current_tickers:
+        st.info("Set Tickers in sidebar.")
     else:
-        st.info("Input tickers in the sidebar.")
+        with st.spinner('Fetching Batch Data...'):
+            try:
+                # 1. 為替と全銘柄を「一括」でダウンロード (これが一番速くて確実)
+                all_tickers = current_tickers + ["USDJPY=X"]
+                # プレマーケットを含む直近データを一括取得
+                data = yf.download(all_tickers, period="5d", interval="1m", include_extghours=True, progress=False)
+                
+                # 2. 為替の抽出
+                try:
+                    rate = data['Close']['USDJPY=X'].dropna().iloc[-1]
+                except: rate = 150.0
 
-st.caption(f"USD/JPY: {rate:.2f} | Last Update: {datetime.now().strftime('%H:%M:%S')} | v3.5")
+                # 3. 各銘柄の計算
+                results = []
+                total_val, total_pl = 0.0, 0.0
+                
+                # RSI計算用の1ヶ月データも別途一括で取得 (高速化)
+                rsi_data = yf.download(current_tickers, period="1mo", progress=False)['Close']
+
+                for t in current_tickers:
+                    try:
+                        # 最新価格の取得
+                        if len(current_tickers) > 1:
+                            prices = data['Close'][t].dropna()
+                        else:
+                            prices = data['Close'].dropna() # 1銘柄のみの場合
+                        
+                        if prices.empty: continue
+                        curr = float(prices.iloc[-1])
+                        
+                        # 保有情報の取得
+                        row = edited_df[edited_df["Ticker"] == t].iloc[0]
+                        avg, shares = float(row["AvgPrice"]), float(row["Shares"])
+                        
+                        mkt_val = curr * shares
+                        cost = avg * shares
+                        pl = mkt_val - cost
+                        total_val += mkt_val
+                        total_pl += pl
+                        
+                        # RSI計算
+                        if len(current_tickers) > 1:
+                            s_rsi = rsi_data[t].dropna()
+                        else:
+                            s_rsi = rsi_data.dropna()
+
+                        delta = s_rsi.diff()
+                        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+                        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                        rs = gain / loss
+                        rsi_val = 100 - (100 / (1 + rs)).iloc[-1]
+                        
+                        signal = "🟢 BUY" if rsi_val < 35 else "🔴 SELL" if rsi_val > 65 else "⚪️ HOLD"
+                        
+                        results.append({
+                            "Symbol": t, "Price": f"${curr:.2f}", "Target(95%)": f"${curr*0.95:.2f}",
+                            "Signal": signal, "P/L ($)": f"{pl:+.2f}", 
+                            "P/L (%)": f"{(pl/cost*100):+.1f}%" if cost > 0 else "0%",
+                            "JPY": f"¥{int(mkt_val * rate):,}"
+                        })
+                    except: continue
+
+                # 表示
+                c1, c2 = st.columns(2)
+                c1.metric("Assets", f"¥{int(total_val * rate):,}")
+                c2.metric("P/L", f"¥{int(total_pl * rate):,}", delta=f"¥{int(total_pl * rate):,}")
+                
+                if results:
+                    st.table(pd.DataFrame(results).set_index("Symbol"))
+                else:
+                    st.error("Data error. Check if Tickers are correct.")
+                    
+            except Exception as e:
+                st.error(f"Connection Error. Please refresh.")
+
+st.caption(f"USD/JPY: {rate:.2f} | {datetime.now().strftime('%H:%M:%S')} | v3.6")
