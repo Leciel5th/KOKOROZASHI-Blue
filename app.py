@@ -45,7 +45,6 @@ df_init = pd.DataFrame(init_rows)
 st.title("KOKOROZASHI Blue")
 tab1, tab2 = st.tabs(["📈 Dash", "📝 Edit"])
 
-# 初期値設定
 rate = 150.0 
 results = []
 total_val = 0.0
@@ -61,7 +60,7 @@ with tab2:
 
 with tab1:
     with st.spinner('Updating Market Data...'):
-        # 為替取得（最もシンプルな方法）
+        # 為替取得
         try:
             rate = yf.Ticker("USDJPY=X").fast_info['lastPrice']
         except: rate = 150.0
@@ -70,16 +69,24 @@ with tab1:
             t = str(row["Ticker"]).upper().strip()
             if not t: continue
             try:
-                # 履歴（history）ではなく「現在のスナップショット（fast_info）」を直接参照
-                # これが最もリクエストが軽く、ブロックされにくい方法です
-                ticker_obj = yf.Ticker(t)
-                curr = ticker_obj.fast_info['lastPrice']
+                # --- プレマーケット対応の価格取得 ---
+                s = yf.Ticker(t)
+                curr = 0.0
                 
-                # それでも取れない場合のみhistory(1日分)を試す
-                if curr is None or curr <= 0:
-                    h = ticker_obj.history(period="1d", include_extghours=True)
+                # 1. まずは「1分足」で市場外データを含めて取得
+                h = s.history(period="1d", interval="1m", include_extghours=True)
+                if not h.empty:
+                    curr = h['Close'].iloc[-1]
+                
+                # 2. 1分足がダメな場合は「当日分」の市場外データを含む履歴
+                if curr <= 0:
+                    h = s.history(period="1d", include_extghours=True)
                     if not h.empty:
                         curr = h['Close'].iloc[-1]
+                
+                # 3. それでもダメなら前回の終値（バックアップ）
+                if curr <= 0:
+                    curr = s.fast_info['lastPrice']
 
                 if curr is None or curr <= 0: continue
 
@@ -89,10 +96,10 @@ with tab1:
                 total_val += m_val
                 total_pl += pl
                 
-                # RSI（ここが重い原因になるので、1dデータから簡易算出）
+                # RSI（1ヶ月の履歴から計算）
                 sig = "⚪️ HOLD"
                 try:
-                    rsi_h = ticker_obj.history(period="1mo")
+                    rsi_h = s.history(period="1mo")
                     if len(rsi_h) > 14:
                         delta = rsi_h['Close'].diff()
                         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
@@ -116,6 +123,6 @@ with tab1:
     if results:
         st.table(pd.DataFrame(results).set_index("Symbol"))
     else:
-        st.warning("⚠️ Market data connection is slow. Please wait 1-2 minutes and refresh.")
+        st.warning("⚠️ Market data connection is slow. Please refresh.")
 
-st.caption(f"USD/JPY: {rate:.2f} | {datetime.now().strftime('%H:%M:%S')} | v3.8")
+st.caption(f"USD/JPY: {rate:.2f} | Last Update: {datetime.now().strftime('%H:%M:%S')} | v3.9")
