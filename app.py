@@ -8,7 +8,6 @@ from datetime import datetime
 ICON_URL = "https://raw.githubusercontent.com/Leciel5th/KOKOROZASHI-Blue/main/icon.png"
 st.set_page_config(page_title="KOKOROZASHI Blue", page_icon=ICON_URL, layout="wide")
 
-# iPhone用スタイル
 st.markdown(f"""
     <head><link rel="apple-touch-icon" href="{ICON_URL}"></head>
     <style>
@@ -33,8 +32,8 @@ if "data" in query_params:
 # --- 3. サイドバー ---
 st.sidebar.markdown("### 🛡️ KOKOROZASHI")
 st.sidebar.link_button("📅 IPO Schedule", "https://www.nasdaq.com/market-activity/ipos")
-ticker_list_str = st.sidebar.text_area("Ticker List", value="RKLB, JOBY, QS, BKSY, PL, ASTS")
-current_tickers = [t.strip().upper() for t in ticker_list_str.split(",") if t.strip()]
+ticker_input = st.sidebar.text_area("Ticker List", value="RKLB, JOBY, QS, BKSY, PL, ASTS")
+current_tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
 
 init_rows = []
 for t in current_tickers:
@@ -46,7 +45,7 @@ df_init = pd.DataFrame(init_rows)
 st.title("KOKOROZASHI Blue")
 tab1, tab2 = st.tabs(["📈 Dash", "📝 Edit"])
 
-# 変数の初期化（これで今回のような赤いエラーを防ぎます）
+# 初期値設定
 rate = 150.0 
 results = []
 total_val = 0.0
@@ -55,35 +54,34 @@ total_pl = 0.0
 with tab2:
     st.markdown("### Edit Portfolio")
     edited_df = st.data_editor(df_init, use_container_width=True, hide_index=True).fillna(0)
-    if st.button("Save & Update"):
+    if st.button("Save & Update URL"):
         d_list = [f"{r['Ticker']},{r['AvgPrice']},{r['Shares']}" for _, r in edited_df.iterrows() if r["Ticker"]]
         st.query_params["data"] = "|".join(d_list)
         st.rerun()
 
 with tab1:
-    with st.spinner('Loading...'):
-        # 1. 為替取得
+    with st.spinner('Updating Market Data...'):
+        # 為替取得（最もシンプルな方法）
         try:
-            r_data = yf.Ticker("USDJPY=X").history(period="1d")
-            if not r_data.empty: rate = r_data['Close'].iloc[-1]
-        except: pass
+            rate = yf.Ticker("USDJPY=X").fast_info['lastPrice']
+        except: rate = 150.0
 
-        # 2. 銘柄データ取得
         for _, row in edited_df.iterrows():
             t = str(row["Ticker"]).upper().strip()
             if not t: continue
             try:
-                # プレマーケットを含む最新1件のみを取得
-                s = yf.Ticker(t)
-                h = s.history(period="1d", include_extghours=True)
+                # 履歴（history）ではなく「現在のスナップショット（fast_info）」を直接参照
+                # これが最もリクエストが軽く、ブロックされにくい方法です
+                ticker_obj = yf.Ticker(t)
+                curr = ticker_obj.fast_info['lastPrice']
                 
-                if h.empty:
-                    # 取れない場合は予備手段
-                    curr = s.basic_info.get('lastPrice', 0.0)
-                else:
-                    curr = h['Close'].iloc[-1]
-                
-                if curr == 0 or pd.isna(curr): continue
+                # それでも取れない場合のみhistory(1日分)を試す
+                if curr is None or curr <= 0:
+                    h = ticker_obj.history(period="1d", include_extghours=True)
+                    if not h.empty:
+                        curr = h['Close'].iloc[-1]
+
+                if curr is None or curr <= 0: continue
 
                 avg, sh = float(row["AvgPrice"]), float(row["Shares"])
                 m_val = curr * sh
@@ -91,17 +89,18 @@ with tab1:
                 total_val += m_val
                 total_pl += pl
                 
-                # RSI簡易計算
-                rsi_h = s.history(period="1mo")
-                rsi_v = 50
-                if len(rsi_h) > 14:
-                    delta = rsi_h['Close'].diff()
-                    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-                    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-                    rs = gain / loss
-                    rsi_v = 100 - (100 / (1 + rs)).iloc[-1]
-                
-                sig = "🟢 BUY" if rsi_v < 35 else "🔴 SELL" if rsi_v > 65 else "⚪️ HOLD"
+                # RSI（ここが重い原因になるので、1dデータから簡易算出）
+                sig = "⚪️ HOLD"
+                try:
+                    rsi_h = ticker_obj.history(period="1mo")
+                    if len(rsi_h) > 14:
+                        delta = rsi_h['Close'].diff()
+                        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                        rs = gain / loss
+                        rsi_v = 100 - (100 / (1 + rs)).iloc[-1]
+                        sig = "🟢 BUY" if rsi_v < 35 else "🔴 SELL" if rsi_v > 65 else "⚪️ HOLD"
+                except: pass
                 
                 results.append({
                     "Symbol": t, "Price": f"${curr:.2f}", "Target(95%)": f"${curr*0.95:.2f}",
@@ -117,6 +116,6 @@ with tab1:
     if results:
         st.table(pd.DataFrame(results).set_index("Symbol"))
     else:
-        st.warning("Waiting for Market Data... (Please Refresh)")
+        st.warning("⚠️ Market data connection is slow. Please wait 1-2 minutes and refresh.")
 
-st.caption(f"USD/JPY: {rate:.2f} | {datetime.now().strftime('%H:%M:%S')} | v3.7")
+st.caption(f"USD/JPY: {rate:.2f} | {datetime.now().strftime('%H:%M:%S')} | v3.8")
