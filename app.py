@@ -1,8 +1,8 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
 import urllib.parse
 from datetime import datetime
-import yfinance as yf # 為替用
 
 # --- 1. ページ設定 ---
 ICON_URL = "https://raw.githubusercontent.com/Leciel5th/KOKOROZASHI-Blue/main/icon.png"
@@ -12,7 +12,7 @@ st.markdown(f"""
     <style>
         h1 {{ font-size: 1.2rem !important; margin: 0; }}
         .stTable {{ font-size: 11px !important; }}
-        div[data-testid="stMetricValue"] {{ font-size: 1.0rem !important; }}
+        div[data-testid="stMetricValue"] {{ font-size: 1.1rem !important; }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -57,43 +57,57 @@ with tab2:
         st.rerun()
 
 with tab1:
-    with st.spinner('Fetching Data...'):
-        # 1. 為替取得（これはv4.0で動いていたので維持）
+    with st.spinner('Updating Indicators...'):
+        # 為替取得
         try:
             rate = yf.Ticker("USDJPY=X").fast_info['lastPrice']
         except: rate = 150.0
 
-        # 2. 株価の一括取得 (yfinanceがダメな時用の軽量版)
-        if current_tickers:
+        for _, row in edited_df.iterrows():
+            t = str(row["Ticker"]).upper().strip()
+            if not t: continue
             try:
-                # 複数の取得方法を組み合わせて「意地でも」取る
-                for t in current_tickers:
-                    try:
-                        ticker = yf.Ticker(t)
-                        # fast_infoはブロックされても動く場合が多い
-                        curr = ticker.fast_info['lastPrice']
-                        
-                        # もし値が取れない、または明らかに古い場合は最新の「1分」だけを取得
-                        if curr is None or curr == 0:
-                            temp_h = ticker.history(period="1d", interval="1m", include_extghours=True)
-                            curr = temp_h['Close'].iloc[-1] if not temp_h.empty else 0
+                ticker_obj = yf.Ticker(t)
+                
+                # 1. プレマーケット込みの最新価格を取得
+                h_1d = ticker_obj.history(period="1d", interval="1m", include_extghours=True)
+                curr = h_1d['Close'].iloc[-1] if not h_1d.empty else ticker_obj.fast_info['lastPrice']
+                
+                if curr is None or curr <= 0: continue
 
-                        if curr > 0:
-                            row = edited_df[edited_df["Ticker"] == t].iloc[0]
-                            avg, sh = float(row["AvgPrice"]), float(row["Shares"])
-                            m_val = curr * sh
-                            pl = m_val - (avg * sh)
-                            total_val += m_val
-                            total_pl += pl
-                            
-                            results.append({
-                                "Symbol": t, "Price": f"${curr:.2f}", 
-                                "Target(95%)": f"${curr*0.95:.2f}",
-                                "P/L($)": f"{pl:+.2f}", "JPY": f"¥{int(m_val * rate):,}"
-                            })
-                    except: continue
-            except:
-                st.error("Still blocked. Please wait 5 mins.")
+                # 2. RSI計算（過去1ヶ月のデータを使用）
+                sig = "⚪️ HOLD"
+                try:
+                    h_1mo = ticker_obj.history(period="1mo")
+                    if len(h_1mo) > 14:
+                        delta = h_1mo['Close'].diff()
+                        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                        rs = gain / loss
+                        rsi_v = 100 - (100 / (1 + rs)).iloc[-1]
+                        
+                        # 判定ロジック
+                        if rsi_v < 35: sig = "🟢 BUY"
+                        elif rsi_v > 65: sig = "🔴 SELL"
+                        else: sig = "⚪️ HOLD"
+                except: pass
+
+                # 3. 集計
+                avg, sh = float(row["AvgPrice"]), float(row["Shares"])
+                m_val = curr * sh
+                pl = m_val - (avg * sh)
+                total_val += m_val
+                total_pl += pl
+                
+                results.append({
+                    "Symbol": t, 
+                    "Price": f"${curr:.2f}", 
+                    "Signal": sig, 
+                    "Target(95%)": f"${curr*0.95:.2f}",
+                    "P/L($)": f"{pl:+.2f}", 
+                    "JPY": f"¥{int(m_val * rate):,}"
+                })
+            except: continue
 
     # 表示
     c1, c2 = st.columns(2)
@@ -103,6 +117,6 @@ with tab1:
     if results:
         st.table(pd.DataFrame(results).set_index("Symbol"))
     else:
-        st.warning("🔄 Waiting for data... Markets might be extremely busy.")
+        st.warning("⚠️ Market connection unstable. Please try refreshing.")
 
-st.caption(f"USD/JPY: {rate:.2f} | {datetime.now().strftime('%H:%M:%S')} | v4.1")
+st.caption(f"USD/JPY: {rate:.2f} | {datetime.now().strftime('%H:%M:%S')} | v4.2")
