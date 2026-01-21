@@ -13,7 +13,7 @@ st.markdown(f"""
     <style>
         h1 {{ font-size: 1.2rem !important; margin: 0; color: #1E88E5; }}
         .stTable {{ font-size: 11px !important; }}
-        div[data-testid="stMetricValue"] {{ font-size: 1.0rem !important; }}
+        div[data-testid="stMetricValue"] {{ font-size: 1.1rem !important; }}
         .link-button {{ 
             display: inline-block; padding: 5px 10px; background-color: #f0f2f6; 
             border-radius: 5px; text-decoration: none; color: #1E88E5; font-size: 10px; margin: 2px;
@@ -51,7 +51,7 @@ tab1, tab2 = st.tabs(["📈 Dash", "📝 Edit"])
 with tab2:
     st.markdown("### Edit Portfolio")
     edited_df = st.data_editor(df_init, use_container_width=True, hide_index=True).fillna(0)
-    if st.button("Save & Update URL"):
+    if st.button("Save & Update"):
         d_list = [f"{r['Ticker']},{r['AvgPrice']},{r['Shares']}" for _, r in edited_df.iterrows() if r["Ticker"]]
         st.query_params["data"] = "|".join(d_list)
         st.rerun()
@@ -63,34 +63,45 @@ with tab1:
     with st.spinner('Accessing Real-time Data...'):
         # 1. 為替取得
         try:
-            rate = yf.Ticker("USDJPY=X").fast_info['lastPrice']
+            rate_info = yf.Ticker("USDJPY=X").fast_info
+            rate = rate_info.get('lastPrice', 150.0)
         except: rate = 150.0
 
-        # 2. 個別銘柄の取得（偽装ヘッダー付き）
-        # yfinanceの内部で使うsessionにブラウザを偽装するヘッダーをセット
-        import requests_cache
+        # 2. ブラウザを装う設定（ブロック対策）
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         session = requests.Session()
-        session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+        session.headers.update(headers)
 
         for _, row in edited_df.iterrows():
             t = str(row["Ticker"]).upper().strip()
             if not t: continue
             try:
                 tk = yf.Ticker(t, session=session)
-                # プレマーケット取得
-                h = tk.history(period="1d", interval="1m", include_extghours=True)
-                curr = h['Close'].iloc[-1] if not h.empty else tk.fast_info['lastPrice']
                 
-                if curr is None or curr <= 0: continue
+                # 市場外データ(include_extghours)を含む最新1分足
+                h = tk.history(period="1d", interval="1m", include_extghours=True)
+                
+                if not h.empty:
+                    curr = h['Close'].iloc[-1]
+                else:
+                    # historyがダメならfast_info
+                    curr = tk.fast_info.get('lastPrice', 0.0)
+                
+                if curr <= 0: continue
 
-                # RSI計算
-                sig, rsi_h = "⚪️ HOLD", tk.history(period="1mo")
-                if len(rsi_h) > 14:
-                    delta = rsi_h['Close'].diff()
-                    gain, loss = (delta.where(delta > 0, 0)).rolling(14).mean(), (-delta.where(delta < 0, 0)).rolling(14).mean()
-                    rs = gain / loss
-                    rsi_v = 100 - (100 / (1 + rs)).iloc[-1]
-                    sig = "🟢 BUY" if rsi_v < 35 else "🔴 SELL" if rsi_v > 65 else "⚪️ HOLD"
+                # RSI（売買シグナル）
+                sig = "⚪️ HOLD"
+                try:
+                    h_1mo = tk.history(period="1mo")
+                    if len(h_1mo) > 14:
+                        delta = h_1mo['Close'].diff()
+                        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                        rs = gain / loss
+                        rsi_v = 100 - (100 / (1 + rs)).iloc[-1]
+                        if rsi_v < 35: sig = "🟢 BUY"
+                        elif rsi_v > 65: sig = "🔴 SELL"
+                except: pass
 
                 avg, sh = float(row["AvgPrice"]), float(row["Shares"])
                 m_val = curr * sh
@@ -105,7 +116,7 @@ with tab1:
                 })
             except: continue
 
-    # --- 資産表示 ---
+    # 表示
     c1, c2 = st.columns(2)
     c1.metric("Assets", f"¥{int(total_val * rate):,}")
     c2.metric("Total P/L", f"¥{int(total_pl * rate):,}", delta=f"¥{int(total_pl * rate):,}")
@@ -113,11 +124,11 @@ with tab1:
     if results:
         st.table(pd.DataFrame(results).set_index("Symbol"))
     else:
-        # 万が一遮断された場合、直リンクボタンを表示
-        st.error("Connection Blocked by Yahoo. Use Quick Links below:")
+        st.error("Market connection busy. Try refreshing in a few minutes.")
+        # クイックリンク表示
         cols = st.columns(3)
         for i, t in enumerate(current_tickers):
             with cols[i % 3]:
-                st.markdown(f'<a href="https://finance.yahoo.com/quote/{t}" class="link-button">🔗 {t} Live</a>', unsafe_allow_html=True)
+                st.markdown(f'<a href="https://finance.yahoo.com/quote/{t}" target="_blank" class="link-button">🔗 {t} Live</a>', unsafe_allow_html=True)
 
-st.caption(f"USD/JPY: {rate:.2f} | {datetime.now().strftime('%H:%M:%S')} | v5.1")
+st.caption(f"USD/JPY: {rate:.2f} | {datetime.now().strftime('%H:%M:%S')} | v5.2")
