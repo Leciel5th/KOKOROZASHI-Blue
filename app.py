@@ -11,11 +11,11 @@ st.set_page_config(page_title="KOKOROZASHI Blue", page_icon=ICON_URL, layout="wi
 st.markdown(f"""
     <style>
         h1 {{ font-size: 1.2rem !important; margin: 0; color: #1E88E5; }}
-        .stTable {{ font-size: 11px !important; }}
+        .stTable {{ font-size: 10px !important; }}
         div[data-testid="stMetricValue"] {{ font-size: 1.1rem !important; }}
         .link-button {{ 
             display: inline-block; padding: 4px 8px; background-color: #f0f2f6; 
-            border-radius: 5px; text-decoration: none; color: #1E88E5; font-size: 10px;
+            border-radius: 5px; text-decoration: none; color: #1E88E5; font-size: 10px; border: 1px solid #ddd;
         }}
     </style>
     """, unsafe_allow_html=True)
@@ -28,12 +28,16 @@ if "data" in query_params:
         decoded = urllib.parse.unquote(query_params["data"])
         for item in decoded.split("|"):
             p = item.split(",")
-            if len(p) == 3:
-                url_data[p[0].upper()] = {"Avg": float(p[1]), "Sh": float(p[2])}
+            if len(p) >= 3:
+                url_data[p[0].upper()] = {
+                    "Avg": float(p[1]), 
+                    "Sh": float(p[2]), 
+                    "Manual": float(p[3]) if len(p) > 3 else 0.0
+                }
     except: pass
 
 # --- 3. サイドバー ---
-st.sidebar.markdown("### 🛡️ KOKOROZASHI")
+st.sidebar.markdown("### 🛡️ KOKOROZASHI v5.4")
 ticker_input = st.sidebar.text_area("Ticker List", value="RKLB, JOBY, QS, BKSY, PL, ASTS")
 tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
 
@@ -42,72 +46,87 @@ st.title("KOKOROZASHI Blue")
 tab1, tab2 = st.tabs(["📈 Dash", "📝 Edit"])
 
 with tab2:
-    init_rows = [{"Ticker": t, "AvgPrice": url_data.get(t,{}).get("Avg",0.0), "Shares": url_data.get(t,{}).get("Sh",0.0)} for t in tickers]
+    st.markdown("##### 📝 Portfolio & Manual Price Override")
+    init_rows = []
+    for t in tickers:
+        d = url_data.get(t, {"Avg": 0.0, "Sh": 0.0, "Manual": 0.0})
+        init_rows.append({"Ticker": t, "AvgPrice": d["Avg"], "Shares": d["Sh"], "ManualPrice": d["Manual"]})
+    
     edited_df = st.data_editor(pd.DataFrame(init_rows), use_container_width=True, hide_index=True).fillna(0)
-    if st.button("Save & Update"):
-        d_list = [f"{r['Ticker']},{r['AvgPrice']},{r['Shares']}" for _, r in edited_df.iterrows() if r["Ticker"]]
+    
+    if st.button("💾 Save & Update"):
+        d_list = [f"{r['Ticker']},{r['AvgPrice']},{r['Shares']},{r['ManualPrice']}" for _, r in edited_df.iterrows() if r["Ticker"]]
         st.query_params["data"] = "|".join(d_list)
+        st.success("Saved!")
         st.rerun()
 
 with tab1:
     results, total_val, total_pl, rate = [], 0.0, 0.0, 150.0
+    api_success = False
 
-    if not tickers:
-        st.info("Set Tickers in sidebar.")
-    else:
-        with st.spinner('Accessing Market...'):
-            try:
-                # 【改善】為替と株価を「一括」で1回のリクエストで取得 (これが一番ブロックされにくい)
-                all_targets = tickers + ["USDJPY=X"]
-                # 1分足、市場外データを含む
-                raw_data = yf.download(all_targets, period="1d", interval="1m", include_extghours=True, progress=False)
-                
-                if not raw_data.empty:
-                    # 為替の抽出
-                    try: rate = raw_data['Close']['USDJPY=X'].dropna().iloc[-1]
-                    except: rate = 150.0
+    with st.spinner('Checking Market...'):
+        try:
+            # 為替と株価の一括取得を試みる
+            raw_data = yf.download(tickers + ["USDJPY=X"], period="1d", interval="1m", include_extghours=True, progress=False)
+            if not raw_data.empty:
+                try: rate = raw_data['Close']['USDJPY=X'].dropna().iloc[-1]
+                except: rate = 150.0
+                api_success = True
+        except:
+            api_success = False
 
-                    # 各銘柄の抽出
-                    for t in tickers:
-                        try:
-                            # 1銘柄のみの場合と複数銘柄の場合でデータの形が変わるのを考慮
-                            if len(all_targets) > 1:
-                                p_series = raw_data['Close'][t].dropna()
-                            else:
-                                p_series = raw_data['Close'].dropna()
+    # 銘柄ごとの計算
+    for t in tickers:
+        try:
+            # 1. APIから取得を試みる
+            curr = 0.0
+            if api_success:
+                try:
+                    if len(tickers + ["USDJPY=X"]) > 1:
+                        curr = float(raw_data['Close'][t].dropna().iloc[-1])
+                    else:
+                        curr = float(raw_data['Close'].dropna().iloc[-1])
+                except: curr = 0.0
+            
+            # 2. APIがダメ、または手入力がある場合は手入力を優先
+            row = edited_df[edited_df["Ticker"] == t].iloc[0]
+            if curr <= 0 or row["ManualPrice"] > 0:
+                # 手入力があればそれを使う
+                if row["ManualPrice"] > 0:
+                    curr = float(row["ManualPrice"])
+            
+            if curr <= 0: continue
 
-                            if p_series.empty: continue
-                            curr = float(p_series.iloc[-1])
+            avg, sh = float(row["AvgPrice"]), float(row["Shares"])
+            m_val = curr * sh
+            pl = m_val - (avg * sh)
+            total_val += m_val
+            total_pl += pl
 
-                            # 保有情報
-                            row = edited_df[edited_df["Ticker"] == t].iloc[0]
-                            avg, sh = float(row["AvgPrice"]), float(row["Shares"])
-                            
-                            m_val = curr * sh
-                            pl = m_val - (avg * sh)
-                            total_val += m_val
-                            total_pl += pl
+            results.append({
+                "Symbol": t, "Price": f"${curr:.2f}", 
+                "P/L (%)": f"{(pl/(avg*sh)*100):+.1f}%" if (avg*sh)>0 else "0%",
+                "JPY Value": f"¥{int(m_val * rate):,}"
+            })
+        except: continue
 
-                            results.append({
-                                "Symbol": t, "Price": f"${curr:.2f}", 
-                                "P/L (%)": f"{(pl/(avg*sh)*100):+.1f}%" if (avg*sh)>0 else "0%",
-                                "JPY Value": f"¥{int(m_val * rate):,}"
-                            })
-                        except: continue
-            except: pass
+    # 資産表示
+    c1, c2 = st.columns(2)
+    c1.metric("Assets", f"¥{int(total_val * rate):,}")
+    c2.metric("Total P/L", f"¥{int(total_pl * rate):,}", delta=f"¥{int(total_pl * rate):,}")
 
-        # 表示
-        c1, c2 = st.columns(2)
-        c1.metric("Assets", f"¥{int(total_val * rate):,}")
-        c2.metric("Total P/L", f"¥{int(total_pl * rate):,}", delta=f"¥{int(total_pl * rate):,}")
+    if results:
+        st.table(pd.DataFrame(results).set_index("Symbol"))
+    
+    # 接続が Busy な場合や、確認したい場合のためのリンク
+    st.markdown("---")
+    st.markdown("##### 🔗 Quick Check (Yahoo Finance)")
+    cols = st.columns(4)
+    for i, t in enumerate(tickers):
+        with cols[i % 4]:
+            st.markdown(f'<a href="https://finance.yahoo.com/quote/{t}" target="_blank" class="link-button">📈 {t}</a>', unsafe_allow_html=True)
 
-        if results:
-            st.table(pd.DataFrame(results).set_index("Symbol"))
-        else:
-            st.warning("⚠️ Still busy. Direct links to live charts below:")
-            cols = st.columns(4)
-            for i, t in enumerate(tickers):
-                with cols[i % 4]:
-                    st.markdown(f'<a href="https://finance.yahoo.com/quote/{t}" target="_blank" class="link-button">🔗 {t}</a>', unsafe_allow_html=True)
+    if not api_success:
+        st.info("💡 API is busy. Check 'Live' links above and enter prices in 'Edit' tab to update total assets.")
 
-st.caption(f"USD/JPY: {rate:.2f} | {datetime.now().strftime('%H:%M:%S')} | v5.3")
+st.caption(f"USD/JPY: {rate:.2f} | {datetime.now().strftime('%H:%M:%S')} | v5.4")
